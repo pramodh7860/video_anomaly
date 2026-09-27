@@ -1,0 +1,46 @@
+# ============================================================
+# Config for Online Multimodal Weakly-Supervised VAD
+# ============================================================
+
+data:
+  root: "./data/processed"          # holds precomputed .npy feature files
+  raw_root: "./data/raw"            # holds raw video files (mp4)
+  annotation_train: "./data/annotations/train_list.csv"
+  annotation_test: "./data/annotations/test_list.csv"
+  dataset_name: "xd-violence"       # see README section 3 for justification
+  snippet_seconds: 1.0              # temporal window length (T)
+  frames_per_snippet: 16            # frames sampled per snippet for MobileNetV3
+  sample_rate: 16000                # audio sample rate
+  n_mels: 64
+  max_snippets: 200                 # truncate/pad videos to this many snippets
+
+model:
+  visual_backbone: "mobilenet_v3_small"   # pretrained on ImageNet
+  visual_feat_dim: 576                    # mobilenet_v3_small penultimate dim
+  audio_feat_dim: 128
+  fused_dim: 704                          # visual_feat_dim + audio_feat_dim
+  gru_hidden_dim: 256
+  gru_layers: 1
+  attention_dim: 128
+  use_audio: true                         # false => visual-only baseline (Exp.1/2)
+  use_attention: true                     # false => Exp.1 (no attention)
+  dropout: 0.3
+
+train:
+  batch_size: 4            # number of videos (bags) per batch
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.0005
+  topk_ratio: 0.15         # top-k snippet selection ratio for MIL ranking loss
+  margin: 1.0               # hinge margin for MIL ranking loss
+  smoothness_lambda: 0.00008   # temporal smoothness regularizer
+  sparsity_lambda: 0.00008     # sparsity regularizer on anomaly scores
+  device: "cuda"            # falls back to cpu automatically if unavailable
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"
+  seed: 42
+
+online_inference:
+  window_stride_snippets: 1   # how many new snippets before re-scoring
+  score_threshold: 0.5        # anomaly decision threshold
+  smoothing_window: 3         # moving-average smoothing over snippet scores
