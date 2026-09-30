@@ -13,10 +13,11 @@ Usage:
 """
 import argparse
 import os
+import subprocess
 import sys
+from typing import Optional
 
 import numpy as np
-import librosa
 import torch
 from tqdm import tqdm
 
@@ -24,6 +25,52 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from src.utils import load_config, get_device
 from src.video_features import MobileNetV3FeatureExtractor, read_snippet_frames
 from src.audio_features import extract_mel_spectrogram, normalize_mel
+
+
+def load_audio_track(path: str, sample_rate: int) -> Optional[np.ndarray]:
+    """Decode a video's audio stream to mono float32 PCM with FFmpeg."""
+    result = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1",
+            "-ar", str(sample_rate), "-f", "f32le", "pipe:1",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return None
+    return np.frombuffer(result.stdout, dtype=np.float32).copy()
+
+
+def extract_audio_one_video(video_path: str, out_dir: str, cfg) -> bool:
+    snippet_s = cfg["data"]["snippet_seconds"]
+    sr = cfg["data"]["sample_rate"]
+    n_mels = cfg["data"]["n_mels"]
+    max_snippets = cfg["data"]["max_snippets"]
+
+    duration = get_video_duration(video_path)
+    n_snippets = min(max_snippets, max(1, int(duration // snippet_s)))
+    audio_wave = load_audio_track(video_path, sr)
+    mel_specs = []
+    for i in range(n_snippets):
+        if audio_wave is None:
+            snippet_audio = np.array([], dtype=np.float32)
+        else:
+            s0, s1 = int(i * snippet_s * sr), int((i + 1) * snippet_s * sr)
+            snippet_audio = audio_wave[s0:s1]
+        mel_specs.append(normalize_mel(extract_mel_spectrogram(
+            snippet_audio, sample_rate=sr, n_mels=n_mels
+        )))
+
+    max_w = max(m.shape[1] for m in mel_specs)
+    mel_specs = [
+        np.pad(m, ((0, 0), (0, max_w - m.shape[1])), mode="constant")
+        for m in mel_specs
+    ]
+    os.makedirs(out_dir, exist_ok=True)
+    np.save(os.path.join(out_dir, "mel.npy"), np.stack(mel_specs).astype(np.float32))
+    return audio_wave is not None
 
 
 def get_video_duration(path: str) -> float:
@@ -47,11 +94,7 @@ def extract_one_video(video_path: str, out_dir: str, extractor, cfg, device):
 
     # Load full audio track once (if present) and slice per snippet, so audio
     # and video snippets are guaranteed to come from the same time interval.
-    audio_wave = None
-    try:
-        audio_wave, _ = librosa.load(video_path, sr=sr, mono=True)
-    except Exception:
-        audio_wave = None  # video has no usable audio track
+    audio_wave = load_audio_track(video_path, sr)
 
     visual_feats, mel_specs = [], []
     for i in range(n_snippets):
@@ -89,6 +132,10 @@ def main():
     parser.add_argument("--config", default="configs/config.yaml")
     parser.add_argument("--video_dir", required=True, help="Folder of raw .mp4 videos")
     parser.add_argument("--out_dir", required=True, help="Where per-video feature folders go")
+    parser.add_argument(
+        "--refresh_audio", action="store_true",
+        help="Rebuild mel.npy with FFmpeg while preserving existing visual.npy files",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -108,6 +155,10 @@ def main():
     no_audio_count = 0
     for video_id, video_path in tqdm(videos, desc="Extracting features"):
         out_dir = os.path.join(args.out_dir, video_id)
+        if args.refresh_audio and os.path.exists(os.path.join(out_dir, "visual.npy")):
+            if not extract_audio_one_video(video_path, out_dir, cfg):
+                no_audio_count += 1
+            continue
         if os.path.exists(os.path.join(out_dir, "visual.npy")):
             continue  # already extracted
         n, has_audio = extract_one_video(

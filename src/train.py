@@ -104,6 +104,8 @@ def main():
     cfg = load_config(args.config)
     set_seed(cfg["train"]["seed"])
     device = get_device(cfg["train"]["device"])
+    if device.type == "cuda":
+        torch.backends.cudnn.enabled = False
     flags = EXPERIMENT_FLAGS[args.experiment]
 
     train_ds = SnippetFeatureDataset(
